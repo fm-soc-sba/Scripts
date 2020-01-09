@@ -1,0 +1,41 @@
+$EveryoneSid = ([System.Security.Principal.NTAccount] "Everyone").Translate([System.Security.Principal.SecurityIdentifier])
+$RightsToCheck = 0xc0002  # ChangeConfig, ChangePermissions, ChangeOwner
+
+Get-Service | ForEach-Object {
+
+    $ServiceName = $_.Name
+    
+    # First, you need the security descriptor. One way to get this is to use
+    # the sc.exe command with the 'sdshow' option:
+    $Sddl = sc.exe sdshow $ServiceName | where { $_ }
+
+    try { # Next, create a common security descriptor object with that SDDL:
+        $SD = New-Object System.Security.AccessControl.CommonSecurityDescriptor(
+            $false,  # Not a container
+            $false,  # Not a DS Object
+            $Sddl
+        )
+    }
+    catch {
+        Write-Warning ("Error creating security descriptor for {0}: {1}" -f $ServiceName, $_.Exception.Message)
+        return
+    }
+
+    if ($SD.DiscretionaryAcl | where { $_.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed -and $_.SecurityIdentifier -eq $EveryoneSid -and $_.AccessMask -band $RightsToCheck }) {
+        $null = $SD.DiscretionaryAcl.RemoveAccess(
+            "Allow",   # ACE type
+            $EveryoneSid,
+            $RightsToCheck,
+            "ContainerInherit, ObjectInherit", # InheritanceFlags
+            "None"  #PropagationFlags
+        )
+
+        [PSCustomObject] @{
+            Service = $ServiceName
+            OriginalSddl = $Sddl
+            UpdatedSddl = $SD.GetSddlForm("All")
+        }
+
+        # At this point, you'd want to call sc.exe sdset (MAKE SURE YOU RUN THIS AS AN ELEVATED ADMINISTRATOR, SO THAT ANY SACL THAT'S PRESENT WON'T BE OVERWRITTEN)
+    }
+} | Format-List
